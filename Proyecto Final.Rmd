@@ -1,0 +1,316 @@
+---
+title: "Proyecto Final"
+author: "Angely Caballero"
+date: "2025-06-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cargar, include=FALSE}
+#install.packages("lattice", dependencies = TRUE)
+#install.packages("recipes", dependencies = TRUE)
+library(PerformanceAnalytics)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(reshape)
+library(reshape2)
+library(lattice)
+#library(caret)
+library(FactoMineR)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(e1071)
+library(cluster)
+library(corrplot)
+library(factoextra)
+library(pROC)
+
+```
+_PUNTO 1:_ Importación de la base de datos, la cual esta en archivo csv.
+```{r importacion}
+infor = read.csv("~/analisis bases/final/Datos.csv", sep = ',', header = TRUE)
+head(infor,5)
+```
+_PUNTO 2:_ Limpieza del dataset
+
+El principal objetivo de este punto es identificar y eliminar los datos duplicados.
+
+```{r limpieza}
+duplicados = duplicated(infor)
+sum(duplicados)
+```
+
+El resultado obtenido nos permite concluir que NO existen datos duplicados en la base de datos.
+
+_PUNTO 3a:_ Reemplazar o eliminar valores incorrectos y atípicos.
+
+El análisis de Outiliers y valores incorrectos se puede hacer únicamente para variables de tipo numérico continuo, por esta razón este análisis se limitará a las variables Age y Fare del dataset, sin embargo primero se definirá cada una de estas variables.
+
+* Age: Corresponde a la edad en años de cada pasajero al momento de subirse al medio de transporte.
+
+* Fare: Corresponde a la tarifa pagada en dólares por cada pasajero.
+
+Teniendo en cuenta los rangos intercuartilicos solicitados, se establecerá como valor atípico a cualquier dato que esté más allá de 1.5 veces el rango intercuartilico calculado, ya sea por arriba o por debajo.
+
+```{r deteccion}
+Atipicos <- c("Age", "Fare")
+
+for (var in Atipicos) {
+  Q1 <- quantile(infor[[var]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(infor[[var]], 0.75, na.rm = TRUE)
+  Cuartil <- Q3 - Q1
+  
+  Infe <- Q1 - 1.5 * Cuartil
+  Supe <- Q3 + 1.5 * Cuartil
+  
+  # 2. Boxplot para visualización
+  boxplot(infor[[var]], main = paste("Boxplot de", var), col = "tomato")
+}
+```
+
+En el caso de la variable age, el diagrama de caja indica que la mitad de los pasajeros tienen edades comprendidas entre los 20 y los 38 años. Además, se identifican valores atípicos que corresponden a pasajeros mayores de 65 años, los cuales representan una fracción de la población total. A pesar de ser considerados outliers, no se perciben como datos erróneos, ya que el pasajero de mayor edad tiene 80 años, una cifra totalmente plausible en este contexto.
+
+Por otro lado, al examinar la variable Fare, que representa el precio del pasaje, se observa una distribución notablemente más desigual. Aproximadamente el 50% de los pasajeros pagaron entre 26 y 65 dólares, pero existe una concentración considerable de valores más altos, llegando incluso a registrarse un pasajero que pagó 500 dólares por su billete.
+
+Los mismos gráficos de cajas sin estos datos atípicos se visualizan a continuación:
+
+```{r Eliminación}
+Atipicos <- c("Age", "Fare")
+Info_limpia <- infor
+
+for (var in Atipicos) {
+  Q1 <- quantile(Info_limpia[[var]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(Info_limpia[[var]], 0.75, na.rm = TRUE)
+  Cuartil <- Q3 - Q1
+
+  Infe <- Q1 - 1.5 * Cuartil
+  Supe <- Q3 + 1.5 * Cuartil
+
+
+ 
+  Info_limpia <- Info_limpia[
+    (is.na(Info_limpia[[var]]) | 
+    (Info_limpia[[var]] >= Infe & Info_limpia[[var]] <= Supe)), 
+  ]
+
+  # Visualización sin outliers
+  boxplot(Info_limpia[[var]], main = paste("Boxplot de", var, "sin outliers"), col = "tomato")
+  
+  
+}
+
+```
+
+_PUNTO 3b:_ Maneja valores faltantes.
+
+Lo primero que hay que hacer para manejar los valores faltantes es determinarlos, para posteriormente imputarlos.
+
+```{r estimar}
+colSums(is.na(Info_limpia))
+
+```
+
+Este código nos permite determinar que existen 162 datos nulos en la columna (Age), por lo tanto se procede a imputar por su media estos valores.
+
+```{r faltante}
+Info_limpia = Info_limpia %>% mutate_if(is.numeric, ~replace_na(.,mean(., na.rm = TRUE)))
+colSums(is.na(Info_limpia))
+hist(Info_limpia$Age,
+     col = "tomato")
+hist(Info_limpia$Fare, 
+     col = "tomato")
+```
+
+La interpretación de los histogramas generados es la siguiente:
+
+Los histogramas de las variables numéricas presentan resultados coherentes. En el caso de la variable edad, se observa una distribución que parece aproximarse a una normal, con una mayor concentración de pasajeros entre los 20 y 30 años. En contraste, la variable Fare no muestra un patrón similar al de una distribución normal, ya que la mayoría de los pasajeros pagaron montos que oscilan entre los 5 y 15 dólares, ubicándose principalmente en la cola izquierda de la distribución.
+
+_PUNTO 4:_ Escala y normaliza.
+
+El método de escalado también se puede hacer únicamente a las variables numéricas continuas del dataset. Por lo que nuevamente se eligen las vairbales Age y Fare.
+
+```{r escalado}
+info_escala <- Info_limpia %>%
+  mutate(
+    Edad_E = (Age - mean(Age, na.rm = TRUE)) / sd(Age, na.rm = TRUE),
+    Tarifa_E = (Fare - mean(Fare, na.rm = TRUE)) / sd(Fare, na.rm = TRUE)
+  )
+```
+
+Se aplicó el proceso de escalado utilizando el método Z-score, el cual consiste en centrar los datos alrededor de cero y escalarlos con una desviación estándar igual a uno. Esto equivale a restar la media a cada valor y dividirlo por la desviación estándar. Este enfoque fue seleccionado porque es el más adecuado para modelos de regresión. En cambio, otros métodos como la normalización mediante Min-Max scaling suelen emplearse en modelos que dependen de medidas de distancia, como KNN, redes neuronales o SVM.
+
+_PUNTO 5:_ Estadisticas descriptivas.
+
+* Histogramas:
+
+```{r HISTO}
+hist(Info_limpia$Age, main = "Histograma de Edad", col = "skyblue", xlab = "Edad")
+hist(Info_limpia$Fare, main = "Histograma de Tarifa", col = "lightgreen", xlab = "Tarifa")
+
+```
+
+* Diagramas de dispersión:
+
+El análisis inicial de las variables numéricas Age y Fare sugiere que no existe una relación evidente entre la edad del pasajero y la tarifa que pagó por su boleto. Al observar la distribución conjunta de ambas variables, no se identifica ninguna tendencia lineal o patrón claro que indique una posible correlación. Por el contrario, los datos se dispersan de manera irregular y aleatoria, lo que da lugar a una representación visual similar a una nube de puntos, característica típica cuando no hay asociación entre las variables analizadas. Esto indica que tanto personas jóvenes como mayores pudieron haber pagado tarifas altas o bajas sin seguir un patrón definido.
+
+```{r dispersion}
+ggplot(Info_limpia, aes(x = Age, y = Fare, color = as.factor(Survived))) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Dispersión Edad vs Tarifa por Supervivencia",
+       x = "Edad", y = "Tarifa", color = "Sobrevivió") +
+  theme_bw()
+```
+
+* Diagramas de caja o violín:
+
+El gráfico sugiere una posible relación positiva entre el valor de la tarifa pagada y la probabilidad de supervivencia. Es decir, los pasajeros que pagaron tarifas más altas, posiblemente por viajar en clases más altas, tuvieron mayores tasas de supervivencia. Esto puede reflejar desigualdades en el acceso a los botes salvavidas o las prioridades durante la evacuación.
+
+```{r cajaaa}
+ggplot(Info_limpia, aes(x = as.factor(Survived), y = Fare, fill = as.factor(Survived))) +
+  geom_violin(trim = FALSE) +
+  labs(title = "Distribución de Tarifa por Supervivencia",
+       x = "Sobrevivió", y = "Tarifa") +
+  theme_minimal()
+```
+
+* Correlaciones y tendencias:
+
+El gráfico de correlación respalda las hipótesis formuladas previamente. En primer lugar, se confirma que no existe una relación significativa entre las variables tarifa y edad, ya que su coeficiente de correlación es apenas 0.06, lo que indica una dependencia prácticamente nula. Por otro lado, se observa una ligera correlación negativa entre la edad y la supervivencia, con un coeficiente de -0.107; este valor es tan bajo que sugiere una ausencia casi total de relación, aunque con una leve inclinación hacia una asociación negativa. Finalmente, el coeficiente de 0.24 entre las variables Fare y Survived sugiere que podría haber una leve tendencia a que los pasajeros que pagaron tarifas más altas tuvieran mayores probabilidades de sobrevivir, lo cual coincide con lo observado en análisis anteriores.
+
+```{r correlaciones}
+chart.Correlation(Info_limpia[, c("Age", "Fare", "Survived")])
+```
+
+_PUNTO 6:_ Reducción de dimensionalidad.
+
+Para lograr una efectiva reducción de la dimensionalidad, es necesario realizar el análisis por componentes principales (PCA) explicado en el material del curso.
+
+```{r Analsisis}
+AnalisisPCA <- Info_limpia[, c("Age", "Fare", "SibSp", "Parch")]
+
+# Escalando variables
+AnalisisPCA_esc <- scale(AnalisisPCA)
+
+pca_output <- prcomp(AnalisisPCA_esc, center = TRUE, scale. = TRUE)
+
+summary(pca_output)
+```
+
+El análisis de Componentes Principales (PCA) revela que las variables que más contribuyen a la varianza explicada son Age (edad) y Fare (tarifa). En particular, estas dos variables, al combinarse, representan el 73.22% de la varianza total de los datos. Esto permite concluir que las variables SibSp y Parch tienen una influencia mínima o nula, y por lo tanto no resultan útiles para los modelos de regresión, motivo por el cual se decide descartarlas.
+
+Con base en estos resultados, se procede a estimar los modelos de regresión lineal y regresión logística correspondientes:
+
+
+_PUNTO 7:_ Modelos supervisados.
+
+Para el modelo de regresión lineal, se escogió como variable dependiente la tarifa pagada por los pasajeros (Fare) y como variable independiente la edad de los pasajeros (Age). Sin embargo, no se optó por tomar la variable independiente en su forma escalada porque al tratarse de un modelo de regresión lineal simple, con una sola variable explicativa, el escalado no afecta la calidad del ajuste del modelo ni mejora su interpretación. Además, trabajar con la edad en su escala original (años) permite una comprensión más intuitiva del coeficiente estimado, ya que este indica directamente cuánto cambia la tarifa por cada año adicional de edad. Por lo tanto, se decidió mantener la variable en su forma original para conservar la claridad interpretativa del modelo. Los resultados del modelo de regresión lineal se muestran a continuación:
+
+```{r reglin}
+info_Reg <- Info_limpia %>%
+  select(Age,Fare) %>%
+  na.omit
+
+#Ajustar un modelo de regresión lineal
+Mod1 <- lm(Fare ~ Age, data = info_Reg)
+summary(Mod1)
+```
+
+Los resultados del modelo son los siguientes:
+
+* Estimador Age = 0.07837 ===> Por cada año adicional del pasajero el precio de su boleto aumenta 0.078 dólares.
+
+* P_valor = 0.0546 ===> La variable edad solo es relevante para el modelo con un nivel de significancia del 10%.
+
+* R^2 = 0.004832 ===> El modelo solo explica el 0.48% de la variabilidad del precio del boleto.
+
+* Intercepto = 15.51664
+
+A continuación, se procede a estimar el modelo de regresión logística, cumpliendo con los requerimientos establecidos en la lectura correspondiente. En este caso, la variable dependiente es Survived, que indica si el pasajero sobrevivió o no. Las variables independientes seleccionadas son las versiones escaladas de Fare y Age, ya que ambas son variables numéricas que aportan información relevante al modelo. La elección de estas variables se justifica por su capacidad explicativa dentro del análisis previo, y el uso de su forma escalada garantiza una mejor estabilidad y comparabilidad dentro del modelo.
+
+
+```{r logistico}
+
+info_Log <- info_escala %>%
+  select(Survived, Edad_E, Tarifa_E) %>%
+  na.omit()
+
+info_Log$Survived <- as.factor(info_Log$Survived)
+
+
+set.seed(235) 
+index <- createDataPartition(info_Log$Survived, p = 0.6, list = FALSE)
+Train <- info_Log[index, ]
+Test <- info_Log[-index, ]
+```
+
+```{r Modelitos}
+Mod_2 <- glm(Survived ~ Edad_E + Tarifa_E, data = Train, family = binomial)
+summary(Mod_2)
+```
+
+La interpretación del modelo se llevará a cabo con las correspondientes predicciones del modelo y mediante todas las métricas de evaluación relevantes como la matriz de confusión, el Accuracy, el Recall, la Precision y el F1-Score.
+
+```{r predicciones}
+Forecast <- predict(Mod_2, newdata = Test, type = "response")
+
+#Clasificar las predicciones al vector (0,1)
+Clasificacion <- ifelse(Forecast > 0.4, 1, 0)
+Clasificacion <- factor(Clasificacion, levels = c(0,1))
+
+#Matriz de confusión
+Matriz <- confusionMatrix(Clasificacion, Test$Survived, positive = "1")
+print(Matriz)
+
+```
+
+La matriz de confusión muestra la siguiente información relevante:
+
+* Falsos Positivos: Se refiere a que el modelo predijo que 31 pasajeros sobrevivian, y falló en su predicción.
+
+* Verdaderos Negativos: Se refiere a que el modelo predijo que 170 pasajeros no sobrevivian, y acertó en su predicción. 
+
+* Falsos Negativos: El modelo predijo que 63 pasajeros no sobrevivian, y falló en su predicción.
+
+* Verdaderos Positivos: Se refiere a que el modelo predijo que 41 pasajeros sobrevivian, y acertó en su predicción.
+
+```{r metricasinter}
+# Accuracy, Precision, Recall, F1
+Matriz$overall['Accuracy']
+Matriz$byClass[c('Precision', 'Recall', 'F1')]
+
+```
+
+De las métricas de evaluación se puede interpretar que:
+
+* Accuracy = 0.6918 ===> El modelo acierta en el 69.18% de los casos. Es decir, en casi 7 de cada 10 predicciones, el modelo clasificó correctamente si un pasajero sobrevivió o no.
+
+* Precision = 0.5694 ===> De todos los pasajeros que el modelo predijo como sobrevivientes, solo el 56.94% realmente sobrevivieron.
+
+* Recall = 0.3942 ===> De todos los pasajeros que realmente sobrevivieron, el modelo solo identificó correctamente al 39.42%.
+
+* F1-Score = 0.4659 ===> Es una métrica combinada que pondera la precisión y el recall. Un valor de 0.4659 indica un rendimiento moderado, pero no muy alto, especialmente en la clase positiva (sobrevivió).
+
+
+Con base en las métricas de evaluación obtenidas, se concluye que el modelo de regresión logística presenta una exactitud del 69.18%, lo cual indica un desempeño general aceptable en términos de predicción. Sin embargo, al analizar métricas más específicas como la precisión (56.94%) y el recall (39.42%), se evidencia que el modelo tiene limitaciones importantes para identificar correctamente a los pasajeros que realmente sobrevivieron. Esto se refleja en un F1 Score de 46.59%, que sugiere un equilibrio moderado entre la precisión y la sensibilidad. En conjunto, estos resultados muestran que aunque el modelo acierta en una proporción considerable de casos, su capacidad para detectar efectivamente a los sobrevivientes es baja.
+
+```{r ROC}
+# ROC y AUC
+ROC <- roc(Test$Survived, Forecast)
+plot(ROC, col = "tomato", main = "Curva ROC")
+auc(ROC)
+
+```
+
+La curva ROC (Receiver Operating Characteristic) representa el desempeño del modelo de clasificación binaria evaluando todos los umbrales posibles de probabilidad. En el gráfico, el eje vertical indica la sensibilidad (también conocida como recall), que refleja la capacidad del modelo para identificar correctamente los casos positivos (en este contexto, los pasajeros que sobrevivieron). El eje horizontal, por su parte, representa 1 menos la especificidad, es decir, la proporción de falsos positivos entre los verdaderos negativos.
+
+El modelo ideal sería aquel cuya curva se aproxime lo más posible a la esquina superior izquierda del gráfico, lo cual implicaría alta sensibilidad y una baja tasa de falsos positivos. En este caso particular, se observa que la curva se aleja moderadamente del modelo aleatorio (representado por la diagonal), lo que sugiere una capacidad predictiva aceptable pero no óptima. Visualmente, se identifica un punto de corte prometedor cerca del valor 0.6.
+
+Por último, el valor del área bajo la curva (AUC) es de 0.6914, lo cual indica que el modelo tiene una capacidad moderada para distinguir entre pasajeros que sobrevivieron y los que no. En términos prácticos, esto significa que hay un 69.14% de probabilidad de que el modelo asigne una puntuación de probabilidad mayor a un sobreviviente que a un no sobreviviente, lo cual sugiere que el modelo tiene cierta utilidad predictiva, aunque con espacio para mejoras.
